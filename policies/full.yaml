@@ -1,0 +1,70 @@
+# Spike S1 variant "full": the shape of warden-policy's ivp-verify-warden-images.yaml in one policy, with the
+# statement-root extractPayload path (Q2) and a repository prefix check (Warden uses .../WARDEN-CCD/svc-).
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: s1-full
+spec:
+  validationActions: [Deny]
+  failurePolicy: Fail
+  webhookConfiguration:
+    timeoutSeconds: 30
+  evaluation:
+    background:
+      enabled: false
+  credentials:
+    secrets: [ghcr-creds]
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        spike: "full"
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  matchImageReferences:
+    - glob: "ghcr.io/warden-ccd/*"
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: true
+    required: true
+  attestors:
+    - name: signer
+      cosign:
+        keyless:
+          identities:
+            - issuer: https://token.actions.githubusercontent.com
+              subjectRegExp: '^https://github\.com/WARDEN-CCD/warden-spike-s1/\.github/workflows/sign\.yml@refs/heads/main$'
+        ctlog:
+          url: https://rekor.sigstore.dev
+  attestations:
+    - name: provenance
+      intoto:
+        type: https://slsa.dev/provenance/v1
+    - name: sbom
+      intoto:
+        type: https://cyclonedx.org/bom
+  variables:
+    - name: allowedRepoPrefix
+      expression: "'https://github.com/WARDEN-CCD/warden-spike-'"
+  validations:
+    - message: "T02/T03/T07: image is not signed by the reusable signer"
+      expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.signer])).all(e, e > 0)
+    - message: "T08: SLSA provenance attestation missing or wrong signer"
+      expression: >-
+        images.containers.map(image, verifyAttestationSignatures(image, attestations.provenance, [attestors.signer])).all(e, e > 0)
+    - message: "T04: provenance names a source repository outside the allowed prefix"
+      expression: >-
+        images.containers.map(image,
+          extractPayload(image, attestations.provenance).predicate.buildDefinition.externalParameters.workflow.repository
+            .startsWith(variables.allowedRepoPrefix)).all(e, e)
+    - message: "T05: provenance says the image was not built from refs/heads/main"
+      expression: >-
+        images.containers.map(image,
+          extractPayload(image, attestations.provenance).predicate.buildDefinition.externalParameters.workflow.ref
+            == 'refs/heads/main').all(e, e)
+    - message: "T08: CycloneDX SBOM attestation missing or wrong signer"
+      expression: >-
+        images.containers.map(image, verifyAttestationSignatures(image, attestations.sbom, [attestors.signer])).all(e, e > 0)

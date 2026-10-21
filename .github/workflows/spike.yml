@@ -128,6 +128,21 @@ jobs:
           curl -sS -H "Authorization: Bearer $tok" -H "$accept" "https://ghcr.io/v2/${repo}/manifests/sha256-${digest#sha256:}" > out/referrers-fallback-tag.json
           curl -sS -H "Authorization: Bearer $tok" "https://ghcr.io/v2/${repo}/tags/list" > out/tags.json
 
+          # Q3: transparency-log entry kind/version inside every bundle attached to the signed image
+          jq -r '.manifests[]? | "\(.digest) \(.annotations["dev.sigstore.bundle.predicateType"] // "?")"' out/referrers-fallback-tag.json |
+          while read -r m ptype; do
+            layer=$(curl -sS -H "Authorization: Bearer $tok" -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+              "https://ghcr.io/v2/${repo}/manifests/$m" | jq -r '.layers[0].digest')
+            curl -sSL -H "Authorization: Bearer $tok" "https://ghcr.io/v2/${repo}/blobs/$layer" > "out/bundle-${m#sha256:}.json"
+            jq -r --arg p "$ptype" '.verificationMaterial.tlogEntries[]? |
+              "\($p)  \(.kindVersion.kind) \(.kindVersion.version)  logId=\(.logId.keyId)  inclusionProof=\(has("inclusionProof"))"' \
+              "out/bundle-${m#sha256:}.json" >> out/tlog-kinds.txt
+          done
+          gh api orgs/WARDEN-CCD/packages/container/warden-spike-s1 --jq '"visibility=\(.visibility)"' > out/package-visibility.txt 2>&1
+          anon=$(curl -s "https://ghcr.io/token?scope=repository:${repo}:pull" | jq -r '.token // empty')
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${anon}" -H "$accept" "https://ghcr.io/v2/${repo}/manifests/${digest}")
+          echo "anonymous manifest fetch: HTTP $code" >> out/package-visibility.txt
+
           {
             echo "## CLI evidence"
             echo '```'; cat out/cli-exit-codes.txt; echo '```'
@@ -146,6 +161,10 @@ jobs:
             echo "Fallback-tag manifests: $(jq '.manifests | length' out/referrers-fallback-tag.json 2>/dev/null)"
             jq -r '.manifests[]? | "\(.artifactType)  \(.annotations["dev.sigstore.bundle.predicateType"] // "")"' out/referrers-fallback-tag.json 2>/dev/null
             echo '```'
+            echo "### Transparency-log entries per bundle — Q3"
+            echo '```'; cat out/tlog-kinds.txt; echo '```'
+            echo "### Package visibility"
+            echo '```'; cat out/package-visibility.txt; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: kind (Kubernetes 1.37) + Kyverno
