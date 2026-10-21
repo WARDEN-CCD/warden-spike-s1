@@ -104,7 +104,7 @@ jobs:
 
       - name: CLI evidence (Q3, Q4, Q5) and referrer layout (Q1)
         run: |
-          set -uo pipefail
+          set +e -uo pipefail   # expected failures (unsigned/foreign) must not abort the step
           mkdir -p out
           rc() { echo "$1: exit $2" | tee -a out/cli-exit-codes.txt; }
           for v in SIGNED UNSIGNED FOREIGN; do
@@ -163,7 +163,7 @@ jobs:
 
       - name: Admission tests (Q1, Q2, Q3)
         run: |
-          set -uo pipefail
+          set +e -uo pipefail   # expected failures (unsigned/foreign) must not abort the step
           kubectl -n kyverno create secret docker-registry ghcr-creds \
             --docker-server=ghcr.io --docker-username="$GITHUB_ACTOR" --docker-password="$GH_TOKEN"
           bash scripts/admission-tests.sh "$SIGNED" "$UNSIGNED" "$FOREIGN" > out/admission.json
