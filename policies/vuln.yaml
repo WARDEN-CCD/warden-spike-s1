@@ -1,0 +1,47 @@
+# Spike S1 variant "vuln" — applies only to namespace s1-vuln (label spike=vuln).
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: s1-vuln
+spec:
+  validationActions: [Deny]
+  failurePolicy: Fail
+  webhookConfiguration:
+    timeoutSeconds: 30
+  evaluation:
+    background:
+      enabled: false
+  credentials:
+    secrets: [ghcr-creds]
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        spike: "vuln"
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  matchImageReferences:
+    - glob: "ghcr.io/warden-ccd/*"
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: true
+    required: true
+  attestors:
+    - name: signer
+      cosign:
+        keyless:
+          identities:
+            - issuer: https://token.actions.githubusercontent.com
+              subjectRegExp: '^https://github\.com/WARDEN-CCD/warden-spike-s1/\.github/workflows/sign\.yml@refs/heads/main$'
+        ctlog:
+          url: https://rekor.sigstore.dev
+  attestations:
+    - name: vulns
+      intoto:
+        type: https://cosign.sigstore.dev/attestation/vuln/v1
+  validations:
+    - message: "vuln attestation missing or wrong signer"
+      expression: >-
+        images.containers.map(image, verifyAttestationSignatures(image, attestations.vulns, [attestors.signer])).all(e, e > 0)

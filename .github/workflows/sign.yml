@@ -1,0 +1,87 @@
+# Reusable signer — mirrors the sign-attest job of warden-platform/build-sign-attest.yml.
+# Its Fulcio certificate subject should be this file's ref (Q4).
+name: sign
+
+on:
+  workflow_call:
+    inputs:
+      image-ref:
+        description: name@sha256:digest
+        type: string
+        required: true
+
+permissions: {}
+
+env:
+  COSIGN_VERSION: v3.1.4
+  SYFT_VERSION: 1.55.0
+  TRIVY_VERSION: 0.76.0
+
+jobs:
+  sign-attest:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      IMAGE_REF: ${{ inputs.image-ref }}
+    steps:
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Install Syft and Trivy as verified binaries; record signer identities (Q6)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          identity() {  # print SAN of the cert inside a sigstore bundle
+            jq -r '.verificationMaterial.certificate.rawBytes // .verificationMaterial.x509CertificateChain.certificates[0].rawBytes' "$1" \
+              | base64 -d | openssl x509 -inform DER -noout -ext subjectAltName | tail -1 | sed 's/^ *//'
+          }
+          verify() {  # $1 checksums file, $2 identity regexp
+            echo "Signer of $1: $(identity "$1.sigstore.json")" | tee -a "$GITHUB_STEP_SUMMARY"
+            cosign verify-blob --bundle "$1.sigstore.json" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp "$2" "$1"
+            sha256sum --check --ignore-missing "$1"
+          }
+          t="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          curl -sSfLO "$t/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sSfLO "$t/trivy_${TRIVY_VERSION}_checksums.txt"
+          curl -sSfLO "$t/trivy_${TRIVY_VERSION}_checksums.txt.sigstore.json"
+          verify "trivy_${TRIVY_VERSION}_checksums.txt" '^https://github\.com/aquasecurity/trivy/'
+          tar -xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
+          s="https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}"
+          curl -sSfLO "$s/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfLO "$s/syft_${SYFT_VERSION}_checksums.txt"
+          curl -sSfLO "$s/syft_${SYFT_VERSION}_checksums.txt.sigstore.json"
+          verify "syft_${SYFT_VERSION}_checksums.txt" '^https://github\.com/anchore/syft/'
+          tar -xzf "syft_${SYFT_VERSION}_linux_amd64.tar.gz" syft
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: SBOM and vulnerability predicates
+        run: |
+          syft "$IMAGE_REF" -o cyclonedx-json=sbom.cdx.json
+          trivy image --format cosign-vuln --output vuln.json "$IMAGE_REF"
+      - name: Sign (keyless)
+        run: cosign sign --yes "$IMAGE_REF"
+      - name: Split reference
+        id: ref
+        run: |
+          echo "name=${IMAGE_REF%@*}" >> "$GITHUB_OUTPUT"
+          echo "digest=${IMAGE_REF#*@}" >> "$GITHUB_OUTPUT"
+      - name: SLSA v1 provenance (GitHub artifact attestation)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.ref.outputs.name }}
+          subject-digest: ${{ steps.ref.outputs.digest }}
+          push-to-registry: true
+      - name: SBOM attestation
+        run: cosign attest --yes --type cyclonedx --predicate sbom.cdx.json "$IMAGE_REF"
+      - name: Vulnerability attestation
+        run: cosign attest --yes --type vuln --predicate vuln.json "$IMAGE_REF"

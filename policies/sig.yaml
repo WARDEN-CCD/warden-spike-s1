@@ -1,0 +1,43 @@
+# Spike S1 variant "sig" — applies only to namespace s1-sig (label spike=sig).
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: s1-sig
+spec:
+  validationActions: [Deny]
+  failurePolicy: Fail
+  webhookConfiguration:
+    timeoutSeconds: 30
+  evaluation:
+    background:
+      enabled: false
+  credentials:
+    secrets: [ghcr-creds]
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        spike: "sig"
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  matchImageReferences:
+    - glob: "ghcr.io/warden-ccd/*"
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: true
+    required: true
+  attestors:
+    - name: signer
+      cosign:
+        keyless:
+          identities:
+            - issuer: https://token.actions.githubusercontent.com
+              subjectRegExp: '^https://github\.com/WARDEN-CCD/warden-spike-s1/\.github/workflows/sign\.yml@refs/heads/main$'
+        ctlog:
+          url: https://rekor.sigstore.dev
+  validations:
+    - message: "signature not from the reusable signer"
+      expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.signer])).all(e, e > 0)

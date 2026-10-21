@@ -1,0 +1,47 @@
+# Spike S1 variant "sbom" — applies only to namespace s1-sbom (label spike=sbom).
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: s1-sbom
+spec:
+  validationActions: [Deny]
+  failurePolicy: Fail
+  webhookConfiguration:
+    timeoutSeconds: 30
+  evaluation:
+    background:
+      enabled: false
+  credentials:
+    secrets: [ghcr-creds]
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        spike: "sbom"
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  matchImageReferences:
+    - glob: "ghcr.io/warden-ccd/*"
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: true
+    required: true
+  attestors:
+    - name: signer
+      cosign:
+        keyless:
+          identities:
+            - issuer: https://token.actions.githubusercontent.com
+              subjectRegExp: '^https://github\.com/WARDEN-CCD/warden-spike-s1/\.github/workflows/sign\.yml@refs/heads/main$'
+        ctlog:
+          url: https://rekor.sigstore.dev
+  attestations:
+    - name: sbom
+      intoto:
+        type: https://cyclonedx.org/bom
+  validations:
+    - message: "CycloneDX SBOM attestation missing or wrong signer"
+      expression: >-
+        images.containers.map(image, verifyAttestationSignatures(image, attestations.sbom, [attestors.signer])).all(e, e > 0)
