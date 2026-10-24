@@ -1,0 +1,21 @@
+# Attack A04 (confused deputy): this NON-svc repo calls the real platform workflow, so its image is validly
+# signed by the trusted builder but names warden-spike-s1 as source. Admission must refuse it (T04).
+name: deputy
+
+on:
+  push:
+    branches: [main]
+
+
+permissions: {}
+
+jobs:
+  delivery:
+    uses: WARDEN-CCD/warden-platform/.github/workflows/build-sign-attest.yml@v0.1.0
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    secrets:
+      WARDEN_PROMOTER_PRIVATE_KEY: ${{ secrets.WARDEN_PROMOTER_PRIVATE_KEY }}

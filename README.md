@@ -27,3 +27,12 @@ One workflow run (`spike.yml`) does everything in CI, nothing locally:
 Expected: `signed` admitted everywhere, `unsigned` and `foreign` denied everywhere. Any other result is a finding.
 
 Outcome write-up: hub `evidence/spikes/S1.md`.
+
+## Attack fixtures (evaluation E2)
+
+This repo also builds the images the `warden-policy` attack suite needs:
+
+- `attack-fixtures.yml` → `ghcr.io/warden-ccd/attack-fixtures:a03` (wrong signer), `:a07` (modified signed image),
+  `:a08` (same digest, signature only).
+- `deputy.yml` + the Maven project at the root → `ghcr.io/warden-ccd/warden-spike-s1:<sha>`: built and signed by the
+  **real** platform workflow, but from a repository that is not `svc-*` (A04, confused deputy).

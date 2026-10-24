@@ -1,0 +1,86 @@
+# Builds the images the warden-policy attack suite needs (hub EVALUATION.md E2) into
+# ghcr.io/warden-ccd/attack-fixtures (public: the org allows public package creation, ADR-028 update).
+#   a03  valid keyless signature from THIS workflow: wrong signer identity (T03)
+#   a07  a signed svc-books image with one extra layer: new digest, no signature (T07)
+#   a08  the exact svc-books digest copied with ONLY its signature, no attestations (T08)
+# A04 is built by deputy.yml (this non-svc repo calling the real platform workflow).
+name: attack-fixtures
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/attack-fixtures.yml"]
+
+permissions: {}
+
+env:
+  DST: ghcr.io/warden-ccd/attack-fixtures
+  SRC: ghcr.io/warden-ccd/svc-books
+  GOOD_DIGEST: sha256:38c35b0d18ec85138b41cdca0a9921bdce564331f490063e11b76e40cb2edf24
+  ORAS_VERSION: 1.3.5
+  ORAS_SHA256: f48a73ea6d026a862c3919fc773da9a8c86fc259c2c737d5baed3b8b9614ad22   # from the release checksums.txt
+
+jobs:
+  fixtures:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write   # a03 is deliberately signed by this (untrusted) workflow
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Install ORAS (checksum pinned)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -sSfLO "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz"
+          echo "${ORAS_SHA256}  oras_${ORAS_VERSION}_linux_amd64.tar.gz" | sha256sum --check
+          tar -xzf "oras_${ORAS_VERSION}_linux_amd64.tar.gz" oras
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: ORAS login
+        env:
+          TOKEN: ${{ github.token }}
+        run: printf '%s' "$TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: a03 — signed by the wrong identity
+        run: |
+          set -euo pipefail
+          printf 'FROM scratch\nCOPY hello.txt /a03.txt\n' > a03.Dockerfile
+          docker build -f a03.Dockerfile -t "$DST:a03" .
+          docker push "$DST:a03"
+          ref=$(docker inspect --format '{{index .RepoDigests 0}}' "$DST:a03")
+          cosign sign --yes "$ref"
+          echo "a03: $ref" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: a07 — signed image modified (new layer, new digest)
+        run: |
+          set -euo pipefail
+          echo tampered > tampered.txt
+          printf 'FROM %s@%s\nCOPY tampered.txt /tampered.txt\n' "$SRC" "$GOOD_DIGEST" > a07.Dockerfile
+          docker build -f a07.Dockerfile -t "$DST:a07" .
+          docker push "$DST:a07"
+          echo "a07: $(docker inspect --format '{{index .RepoDigests 0}}' "$DST:a07")" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: a08 — same digest, signature only, attestations stripped
+        run: |
+          set -euo pipefail
+          hex="${GOOD_DIGEST#sha256:}"
+          oras cp "$SRC@$GOOD_DIGEST" "$DST:a08"
+          oras manifest fetch "$SRC:sha256-$hex" > referrers.json
+          sig=$(jq -r '.manifests[] | select(.annotations["dev.sigstore.bundle.predicateType"]=="https://sigstore.dev/cosign/sign/v1") | .digest' referrers.json)
+          test -n "$sig"
+          oras cp "$SRC@$sig" "$DST:a08-signature-only"
+          jq --arg s "$sig" '.manifests |= map(select(.digest == $s))' referrers.json > index.json
+          oras manifest push --media-type application/vnd.oci.image.index.v1+json "$DST:sha256-$hex" index.json
+          echo "a08: $DST@$GOOD_DIGEST (referrers: signature only)" | tee -a "$GITHUB_STEP_SUMMARY"
